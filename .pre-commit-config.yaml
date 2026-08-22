@@ -1,0 +1,43 @@
+# Managed by project-validation-bootstrap.
+default_install_hook_types: [pre-commit]
+fail_fast: false
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+      - id: check-ast
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: check-yaml
+      - id: debug-statements
+      - id: detect-private-key
+      - id: mixed-line-ending
+        args: [--fix=no]
+
+  - repo: local
+    hooks:
+      - id: swift-parse
+        name: swift parse
+        entry: swiftc -parse
+        language: system
+        files: \.swift$
+      - id: swift-format
+        name: swift format lint
+        entry: xcrun swift-format lint --strict --recursive Sources Tests
+        language: system
+        pass_filenames: false
+        files: \.swift$
+      - id: zsh-syntax
+        name: zsh syntax
+        entry: /bin/zsh -n
+        language: system
+        files: ^scripts/.*\.sh$
+      - id: plist-lint
+        name: plist lint
+        entry: /usr/bin/plutil -lint
+        language: system
+        files: \.plist(\.template)?$

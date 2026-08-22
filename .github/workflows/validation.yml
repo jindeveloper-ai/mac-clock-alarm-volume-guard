@@ -1,0 +1,98 @@
+# Managed by project-validation-bootstrap.
+name: Validation
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  prek:
+    name: prek
+    runs-on: macos-26
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: j178/prek-action@4e14d07f9231acabce116ccfca13b13dd9755ece
+
+  native:
+    name: native-tests-build
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - run: swift test
+      - run: swift run clock-alarm-volume-guard self-test
+      - run: swift build -c release
+
+  security:
+    name: security
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - name: Scan secrets with Gitleaks
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: "false"
+      - name: Detect conditional scanner scope
+        id: scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.ref_type }}" == "tag" || \
+                "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "dependencies=true" >> "$GITHUB_OUTPUT"
+            echo "security=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          base="${{ github.event.pull_request.base.sha || github.event.before }}"
+          if [[ -z "$base" || "$base" =~ ^0+$ ]] || \
+             ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            echo "dependencies=true" >> "$GITHUB_OUTPUT"
+            echo "security=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed="$(git diff --name-only "$base" HEAD)"
+          dependency_pattern='(^|/)(Cargo.lock|Gemfile.lock|Package.resolved|go.sum|'
+          dependency_pattern+='package(-lock)?\.json|pnpm-lock\.yaml|pyproject\.toml|'
+          dependency_pattern+='requirements[^/]*\.txt|uv\.lock|yarn\.lock)$'
+          if grep -Eq "$dependency_pattern" <<< "$changed"; then
+            echo "dependencies=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "dependencies=false" >> "$GITHUB_OUTPUT"
+          fi
+          security_path_pattern='(auth|credential|permission|secret|token|upload|webhook|'
+          security_path_pattern+='(^|[-_/])(api|file|fs|http|process)([-_/.]|$))'
+          security_code_pattern='auth|authorization|credential|permission|secret|token|webhook|'
+          security_code_pattern+='subprocess|child_process|spawn\(|exec\(|open\(|Path\(|FileManager|'
+          security_code_pattern+='read_text|write_text|fetch\(|requests\.|urllib|https?://'
+          if grep -Eiq "$security_path_pattern" <<< "$changed" || \
+             git diff --unified=0 "$base" HEAD -- \
+               '*.c' '*.cc' '*.cpp' '*.go' '*.js' '*.jsx' '*.php' '*.py' '*.rb' \
+               '*.rs' '*.sh' '*.swift' '*.ts' '*.tsx' \
+               | grep -Eiq "$security_code_pattern"; then
+            echo "security=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "security=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Set up Python for Semgrep
+        if: steps.scope.outputs.security == 'true'
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.13"
+      - name: Install Semgrep
+        if: steps.scope.outputs.security == 'true'
+        run: python -m pip install semgrep==1.173.0
+      - name: Scan security-sensitive source with Semgrep
+        if: steps.scope.outputs.security == 'true'
+        run: >-
+          semgrep scan --config=auto --error
+          --exclude .venv --exclude node_modules --exclude validation-reports .
